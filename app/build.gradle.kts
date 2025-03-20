@@ -187,12 +187,26 @@ android {
         }
     }
     signingConfigs {
-        create("release") {
-            val keystore = System.getenv("RELEASE_KEYSTORE")
-            storeFile = if (keystore != null) { File(keystore) } else { null }
-            storePassword = System.getenv("RELEASE_KEYSTORE_PASSPHRASE")
-            keyAlias = System.getenv("RELEASE_KEY_ALIAS")
-            keyPassword = System.getenv("RELEASE_KEY_PASSPHRASE")
+        // Make signing conditional based on available environment variables
+        if (System.getenv("RELEASE_KEYSTORE") != null &&
+            System.getenv("RELEASE_KEY_ALIAS") != null &&
+            System.getenv("RELEASE_KEY_PASSPHRASE") != null &&
+            System.getenv("RELEASE_KEYSTORE_PASSPHRASE") != null) {
+
+            create("release") {
+                storeFile = file(System.getenv("RELEASE_KEYSTORE"))
+                storePassword = System.getenv("RELEASE_KEYSTORE_PASSPHRASE")
+                keyAlias = System.getenv("RELEASE_KEY_ALIAS")
+                keyPassword = System.getenv("RELEASE_KEY_PASSPHRASE")
+            }
+
+            // Modify the existing debug config instead of creating a new one
+            getByName("debug") {
+                storeFile = file(System.getenv("RELEASE_KEYSTORE"))
+                storePassword = System.getenv("RELEASE_KEYSTORE_PASSPHRASE")
+                keyAlias = System.getenv("RELEASE_KEY_ALIAS")
+                keyPassword = System.getenv("RELEASE_KEY_PASSPHRASE")
+            }
         }
     }
     buildTypes {
@@ -201,7 +215,17 @@ android {
             isShrinkResources = true
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
 
-            signingConfig = signingConfigs.getByName("release")
+            // Only use release signing config if it exists
+            if (signingConfigs.names.contains("release")) {
+                signingConfig = signingConfigs.getByName("release")
+            }
+        }
+
+        getByName("debug") {
+            // Apply signing to debug builds as well
+            if (signingConfigs.names.contains("debug")) {
+                signingConfig = signingConfigs.getByName("debug")
+            }
         }
     }
     compileOptions {
