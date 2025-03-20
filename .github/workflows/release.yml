@@ -103,9 +103,12 @@ jobs:
       - name: Prepare Debug Artifacts
         if: ${{ !(startsWith(github.ref, 'refs/tags/') || (github.event_name == 'workflow_dispatch' && github.event.inputs.create_release == 'true')) }}
         run: |
+          # Replace slashes with hyphens in the version name for file paths; needed for feature branches
+          SAFE_VERSION=$(echo ${{ steps.get_version.outputs.version }} | sed 's/\//-/g')
+
           mkdir -p app/build/distributions/debug
-          cp app/build/outputs/apk/release/*.apk app/build/distributions/debug/PixelUpdater-${{ steps.get_version.outputs.version }}-debug.apk
-          cp app/build/distributions/release/*.zip app/build/distributions/debug/PixelUpdater-${{ steps.get_version.outputs.version }}-debug.zip
+          cp app/build/outputs/apk/release/*.apk "app/build/distributions/debug/PixelUpdater-${SAFE_VERSION}-debug.apk"
+          cp app/build/distributions/release/*.zip "app/build/distributions/debug/PixelUpdater-${SAFE_VERSION}-debug.zip"
 
       - name: Debug list artifacts
         run: |
