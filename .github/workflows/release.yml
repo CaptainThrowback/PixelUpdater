@@ -99,6 +99,15 @@ jobs:
           ./gradlew signReleaseZip
           ./gradlew updateJsonRelease
 
+      # Create a safe version string for artifact naming
+      - name: Create Safe Version String
+        id: safe_version
+        run: |
+          # Replace slashes with hyphens in the version name for artifact names
+          SAFE_VERSION=$(echo ${{ steps.get_version.outputs.version }} | sed 's/\//-/g')
+          echo "version=$SAFE_VERSION" >> "$GITHUB_OUTPUT"
+          echo "Using safe version: $SAFE_VERSION"
+
       # For PR and branch builds, create a debug directory and copy artifacts
       - name: Prepare Debug Artifacts
         if: ${{ !(startsWith(github.ref, 'refs/tags/') || (github.event_name == 'workflow_dispatch' && github.event.inputs.create_release == 'true')) }}
@@ -118,7 +127,7 @@ jobs:
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: PixelUpdater-artifacts-${{ steps.get_version.outputs.version }}
+          name: PixelUpdater-artifacts-${{ steps.safe_version.outputs.version }}
           path: |
             app/build/distributions/release/*
             app/build/distributions/debug/*
