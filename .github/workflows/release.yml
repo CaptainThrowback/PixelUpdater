@@ -2,12 +2,21 @@ name: Build-Release
 
 on:
   push:
-    # Uncomment to test against a branch
-    #branches:
-    #  - ci
+    branches:
+      - main
+      - develop
     tags:
       - 'v*'
+  pull_request:
+    branches:
+      - main
+      - develop
   workflow_dispatch:
+    inputs:
+      create_release:
+        type: boolean
+        description: 'Create GitHub release'
+        default: false
 
 jobs:
   build:
@@ -20,16 +29,31 @@ jobs:
         uses: actions/checkout@v4
         with:
           submodules: true
+          fetch-depth: 0
 
       # https://github.com/actions/checkout/issues/290
       - name: Preserve tag annotations
         run: git fetch -f origin ${{ github.ref }}:${{ github.ref }}
+        if: startsWith(github.ref, 'refs/tags/')
 
-      - name: Get version from git describe
+      - name: Get version from git
         id: get_version
         run: |
-          version=$(git describe | sed -E 's/v([0-9]*\.[0-9]*)-([0-9]+)-g([0-9a-f]+)/v\1.r\2.g\3/')
+          if [[ "${{ github.ref }}" == refs/tags/v* ]]; then
+            # For tags: Use the standard versioning
+            version=$(git describe | sed -E 's/v([0-9]*\.[0-9]*)-([0-9]+)-g([0-9a-f]+)/v\1.r\2.g\3/')
+          elif [[ "${{ github.event_name }}" == "pull_request" ]]; then
+            # For PRs: Use PR number and short SHA
+            short_sha=$(git rev-parse --short HEAD)
+            version="pr-${{ github.event.pull_request.number }}-${short_sha}"
+          else
+            # For branch builds: Use branch name and short SHA
+            branch_name="${GITHUB_REF#refs/heads/}"
+            short_sha=$(git rev-parse --short HEAD)
+            version="${branch_name}-${short_sha}"
+          fi
           echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "Using version: $version"
 
       - name: Validate gradle wrapper checksum
         uses: gradle/wrapper-validation-action@v2
@@ -41,28 +65,29 @@ jobs:
           java-version: 17
           cache: gradle
 
+      # Only decode keystore for tag builds or manual builds with release option
       - name: Decode Keystore
+        if: startsWith(github.ref, 'refs/tags/') || (github.event_name == 'workflow_dispatch' && github.event.inputs.create_release == 'true')
         run: |
           echo -n "${{ secrets.RELEASE_KEYSTORE_BASE64 }}" | base64 -d > keystore.jks
 
+      # Only create signing key for tag builds or manual builds with release option
       - name: Create SSH KEY
+        if: startsWith(github.ref, 'refs/tags/') || (github.event_name == 'workflow_dispatch' && github.event.inputs.create_release == 'true')
         run: |
           echo "${{ secrets.SIGNING_KEY }}" > pixelupdater.key
           chmod 600 pixelupdater.key
 
-      # - name: Debug Keystore and ssh key
-      #   run: |
-      #     sha256sum keystore.jks > keystore_sha256.txt
-      #     sha256sum pixelupdater.key > ssh_key_sha256.txt
-      #     ls -l
-      #     echo "Checking keystore file path:"
-      #     echo [$PWD]
-      #     echo "keystore hash"
-      #     cat keystore_sha256.txt
-      #     echo "ssh_key hash"
-      #     cat ssh_key_sha256.txt
+      - name: Build APK
+        run: ./gradlew assembleRelease
 
-      - name: Build Release apk
+      # All builds create the zip (Magisk module)
+      - name: Build Zip Package
+        run: ./gradlew zipRelease
+
+      # Only sign zip and update JSON for tag builds or manual builds with release option
+      - name: Sign Release Package
+        if: startsWith(github.ref, 'refs/tags/') || (github.event_name == 'workflow_dispatch' && github.event.inputs.create_release == 'true')
         env:
           RELEASE_KEYSTORE: ${{ github.workspace }}/keystore.jks
           RELEASE_KEY_ALIAS: release
@@ -71,30 +96,43 @@ jobs:
           SIGNING_KEY: ${{ github.workspace }}/pixelupdater.key
           SIGNING_KEY_PASSPHRASE: ${{ secrets.SIGNING_KEY_PASSPHRASE }}
         run: |
-          ./gradlew zipRelease
           ./gradlew signReleaseZip
           ./gradlew updateJsonRelease
 
+      # For PR and branch builds, create a debug directory and copy artifacts
+      - name: Prepare Debug Artifacts
+        if: ${{ !(startsWith(github.ref, 'refs/tags/') || (github.event_name == 'workflow_dispatch' && github.event.inputs.create_release == 'true')) }}
+        run: |
+          mkdir -p app/build/distributions/debug
+          cp app/build/outputs/apk/release/*.apk app/build/distributions/debug/PixelUpdater-${{ steps.get_version.outputs.version }}-debug.apk
+          cp app/build/distributions/release/*.zip app/build/distributions/debug/PixelUpdater-${{ steps.get_version.outputs.version }}-debug.zip
+
       - name: Debug list artifacts
         run: |
-          ls -lR app/build/distributions/release
+          ls -lR app/build/distributions/
 
+      # Upload artifacts for all builds
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: PixelUpdater-artifacts-${{ steps.get_version.outputs.version }}-release
-          path: app/build/distributions/release/*
+          name: PixelUpdater-artifacts-${{ steps.get_version.outputs.version }}
+          path: |
+            app/build/distributions/release/*
+            app/build/distributions/debug/*
 
+      # Only upload release-info for tagged releases
       - name: Upload release-info
         uses: actions/upload-artifact@v4
         id: upload_release_info
+        if: startsWith(github.ref, 'refs/tags/')
         with:
           name: release.json
           path: app/build/distributions/release.json
 
-      # https://github.com/ericcornelissen/git-tag-annotation-action/blob/v2.0.6/src/main.sh
+      # Only get annotation for tagged releases
       - name: Get annotation from git for-each-ref
         id: get_annotation
+        if: startsWith(github.ref, 'refs/tags/')
         run: |
           {
             echo 'annotation<<EOF'
@@ -102,8 +140,10 @@ jobs:
             echo 'EOF'
           } >> "$GITHUB_OUTPUT"
 
+      # Create GitHub release only for tag builds
       - name: Create release
         id: create_release
+        if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
         with:
           token: ${{ secrets.GITHUB_TOKEN }}

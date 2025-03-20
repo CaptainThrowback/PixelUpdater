@@ -14,6 +14,7 @@ import android.app.NotificationManager
 import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
+import android.content.res.Resources
 import android.util.Log
 import androidx.annotation.DrawableRes
 import androidx.annotation.StringRes
@@ -53,6 +54,10 @@ class Notifications(
     }
 
     private val notificationManager = context.getSystemService(NotificationManager::class.java)
+
+    init {
+        updateChannels()
+    }
 
     private fun createPersistentChannel() = NotificationChannel(
         CHANNEL_ID_PERSISTENT,
@@ -101,32 +106,25 @@ class Notifications(
         LEGACY_CHANNEL_IDS.forEach { notificationManager.deleteNotificationChannel(it) }
     }
 
-    // Helper method to safely get the notification icon resource
-    private fun getSafeIcon(iconResId: Int): Int {
-        try {
-            // First try using the provided icon
-            if (iconResId != 0) {
-                context.resources.getDrawable(iconResId, null)
-                Log.d(TAG, "Using provided icon: $iconResId")
-                return iconResId
-            }
+    /**
+     * Safely get a drawable resource ID for notification icons.
+     * Falls back to system icons if the requested icon cannot be loaded.
+     */
+    @DrawableRes
+    private fun getSafeIcon(@DrawableRes iconResId: Int): Int {
+        return try {
+            Log.d(TAG, "Attempting to use icon resource: $iconResId")
+            context.resources.getResourceName(iconResId)
+            context.resources.getDrawable(iconResId, null)
+            Log.d(TAG, "Using provided icon: $iconResId")
+            iconResId
+        } catch (e: Resources.NotFoundException) {
+            Log.e(TAG, "Failed to load icon resource $iconResId, falling back to system icon", e)
+            android.R.drawable.ic_dialog_info
         } catch (e: Exception) {
-            Log.w(TAG, "Failed to load icon: $iconResId", e)
+            Log.e(TAG, "Unexpected error loading icon resource $iconResId, falling back to system icon", e)
+            android.R.drawable.ic_dialog_info
         }
-
-        try {
-            // Then try our backup icon
-            val safeIcon = R.drawable.ic_notification_safe
-            context.resources.getDrawable(safeIcon, null)
-            Log.d(TAG, "Using safe fallback icon")
-            return safeIcon
-        } catch (e: Exception) {
-            Log.w(TAG, "Failed to load safe icon", e)
-        }
-
-        // Finally fall back to a system icon
-        Log.d(TAG, "Using system fallback icon")
-        return android.R.drawable.ic_dialog_info
     }
 
     /** Create a persistent notification for background services. */
@@ -143,6 +141,7 @@ class Notifications(
             "Must specify both current and max progress or neither"
         }
 
+        // Get a safe icon resource ID that won't crash the app
         val safeIconResId = getSafeIcon(iconResId)
 
         val notificationIntent = Intent(context, SettingsActivity::class.java)
@@ -169,10 +168,11 @@ class Notifications(
                 }
             }
 
-            for ((actionTextResId, actionIntent) in actions) {
+            for ((i, pair) in actions.withIndex()) {
+                val (actionTextResId, actionIntent) = pair
                 val actionPendingIntent = PendingIntent.getService(
                     context,
-                    0,
+                    i + 10, // different request code for each action
                     actionIntent,
                     PendingIntent.FLAG_IMMUTABLE or
                             PendingIntent.FLAG_UPDATE_CURRENT or
@@ -209,6 +209,7 @@ class Notifications(
         actions: List<Pair<Int, Intent>>,
         id: Int?,
     ) {
+        // Get a safe icon resource ID that won't crash the app
         val safeIconResId = getSafeIcon(icon)
 
         val notification = Notification.Builder(context, channel).run {
@@ -231,7 +232,7 @@ class Notifications(
                 val (actionTextResId, actionIntent) = pair
                 val actionPendingIntent = PendingIntent.getService(
                     context,
-                    (id ?: 0) * 2 + i,
+                    (id ?: 0) * 10 + i, // unique request code for each action
                     actionIntent,
                     PendingIntent.FLAG_IMMUTABLE or
                             PendingIntent.FLAG_UPDATE_CURRENT or
@@ -284,8 +285,8 @@ class Notifications(
         }
     }
 
-    // This is a duplicate for backward compatibility - will eventually be removed
     fun dismissNotifications() {
+        notificationManager.cancel(ID_PREPARING)
         dismissAlertNotifications()
     }
 }
