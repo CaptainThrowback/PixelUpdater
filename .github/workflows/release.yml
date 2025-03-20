@@ -2,21 +2,21 @@ name: Build-Release
 
 on:
   push:
-    branches:
-      - main
-      - develop
+    # Uncomment to test against a branch
+    #branches:
+    #  - ci
     tags:
       - 'v*'
-  pull_request:
-    branches:
-      - main
-      - develop
   workflow_dispatch:
     inputs:
       create_release:
-        type: boolean
         description: 'Create GitHub release'
-        default: false
+        required: true
+        default: 'false'
+        type: choice
+        options:
+          - 'true'
+          - 'false'
 
 jobs:
   build:
@@ -36,21 +36,22 @@ jobs:
         run: git fetch -f origin ${{ github.ref }}:${{ github.ref }}
         if: startsWith(github.ref, 'refs/tags/')
 
-      - name: Get version from git
+      - name: Get version
         id: get_version
         run: |
-          if [[ "${{ github.ref }}" == refs/tags/v* ]]; then
-            # For tags: Use the standard versioning
+          # For tags, use the tag name
+          if [[ $GITHUB_REF == refs/tags/* ]]; then
             version=$(git describe | sed -E 's/v([0-9]*\.[0-9]*)-([0-9]+)-g([0-9a-f]+)/v\1.r\2.g\3/')
-          elif [[ "${{ github.event_name }}" == "pull_request" ]]; then
-            # For PRs: Use PR number and short SHA
-            short_sha=$(git rev-parse --short HEAD)
-            version="pr-${{ github.event.pull_request.number }}-${short_sha}"
+          # For branches, use branch name + SHA
           else
-            # For branch builds: Use branch name and short SHA
-            branch_name="${GITHUB_REF#refs/heads/}"
+            branch=${GITHUB_REF#refs/heads/}
+            if [[ "$branch" == "refs/pull/"* ]]; then
+              branch="pr-${GITHUB_REF#refs/pull/}"
+            fi
             short_sha=$(git rev-parse --short HEAD)
-            version="${branch_name}-${short_sha}"
+            version="${branch}-${short_sha}"
+            # Replace slashes with hyphens in version, the branch name may contain slashes.
+            version=$(echo "$version" | sed 's/\//-/g')
           fi
           echo "version=$version" >> "$GITHUB_OUTPUT"
           echo "Using version: $version"
@@ -65,29 +66,16 @@ jobs:
           java-version: 17
           cache: gradle
 
-      # Only decode keystore for tag builds or manual builds with release option
       - name: Decode Keystore
-        if: startsWith(github.ref, 'refs/tags/') || (github.event_name == 'workflow_dispatch' && github.event.inputs.create_release == 'true')
         run: |
           echo -n "${{ secrets.RELEASE_KEYSTORE_BASE64 }}" | base64 -d > keystore.jks
 
-      # Only create signing key for tag builds or manual builds with release option
       - name: Create SSH KEY
-        if: startsWith(github.ref, 'refs/tags/') || (github.event_name == 'workflow_dispatch' && github.event.inputs.create_release == 'true')
         run: |
           echo "${{ secrets.SIGNING_KEY }}" > pixelupdater.key
           chmod 600 pixelupdater.key
 
-      - name: Build APK
-        run: ./gradlew assembleRelease
-
-      # All builds create the zip (Magisk module)
-      - name: Build Zip Package
-        run: ./gradlew zipRelease
-
-      # Only sign zip and update JSON for tag builds or manual builds with release option
-      - name: Sign Release Package
-        if: startsWith(github.ref, 'refs/tags/') || (github.event_name == 'workflow_dispatch' && github.event.inputs.create_release == 'true')
+      - name: Build Release apk
         env:
           RELEASE_KEYSTORE: ${{ github.workspace }}/keystore.jks
           RELEASE_KEY_ALIAS: release
@@ -96,43 +84,20 @@ jobs:
           SIGNING_KEY: ${{ github.workspace }}/pixelupdater.key
           SIGNING_KEY_PASSPHRASE: ${{ secrets.SIGNING_KEY_PASSPHRASE }}
         run: |
+          ./gradlew zipRelease
           ./gradlew signReleaseZip
           ./gradlew updateJsonRelease
 
-      # Create a safe version string for artifact naming
-      - name: Create Safe Version String
-        id: safe_version
-        run: |
-          # Replace slashes with hyphens in the version name for artifact names
-          SAFE_VERSION=$(echo ${{ steps.get_version.outputs.version }} | sed 's/\//-/g')
-          echo "version=$SAFE_VERSION" >> "$GITHUB_OUTPUT"
-          echo "Using safe version: $SAFE_VERSION"
-
-      # For PR and branch builds, create a debug directory and copy artifacts
-      - name: Prepare Debug Artifacts
-        if: ${{ !(startsWith(github.ref, 'refs/tags/') || (github.event_name == 'workflow_dispatch' && github.event.inputs.create_release == 'true')) }}
-        run: |
-          # Replace slashes with hyphens in the version name for file paths; needed for feature branches
-          SAFE_VERSION=$(echo ${{ steps.get_version.outputs.version }} | sed 's/\//-/g')
-
-          mkdir -p app/build/distributions/debug
-          cp app/build/outputs/apk/release/*.apk "app/build/distributions/debug/PixelUpdater-${SAFE_VERSION}-debug.apk"
-          cp app/build/distributions/release/*.zip "app/build/distributions/debug/PixelUpdater-${SAFE_VERSION}-debug.zip"
-
       - name: Debug list artifacts
         run: |
-          ls -lR app/build/distributions/
+          ls -lR app/build/distributions/release
 
-      # Upload artifacts for all builds
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: PixelUpdater-artifacts-${{ steps.safe_version.outputs.version }}
-          path: |
-            app/build/distributions/release/*
-            app/build/distributions/debug/*
+          name: PixelUpdater-artifacts-${{ steps.get_version.outputs.version }}-release
+          path: app/build/distributions/release/*
 
-      # Only upload release-info for tagged releases
       - name: Upload release-info
         uses: actions/upload-artifact@v4
         id: upload_release_info
@@ -141,7 +106,7 @@ jobs:
           name: release.json
           path: app/build/distributions/release.json
 
-      # Only get annotation for tagged releases
+      # https://github.com/ericcornelissen/git-tag-annotation-action/blob/v2.0.6/src/main.sh
       - name: Get annotation from git for-each-ref
         id: get_annotation
         if: startsWith(github.ref, 'refs/tags/')
@@ -152,10 +117,10 @@ jobs:
             echo 'EOF'
           } >> "$GITHUB_OUTPUT"
 
-      # Create GitHub release only for tag builds
+      # Create release only if it's a tag or requested
       - name: Create release
         id: create_release
-        if: startsWith(github.ref, 'refs/tags/')
+        if: startsWith(github.ref, 'refs/tags/') || (github.event_name == 'workflow_dispatch' && github.event.inputs.create_release == 'true')
         uses: softprops/action-gh-release@v2
         with:
           token: ${{ secrets.GITHUB_TOKEN }}

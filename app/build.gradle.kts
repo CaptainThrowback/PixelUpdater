@@ -187,26 +187,12 @@ android {
         }
     }
     signingConfigs {
-        // Make signing conditional based on available environment variables
-        if (System.getenv("RELEASE_KEYSTORE") != null &&
-            System.getenv("RELEASE_KEY_ALIAS") != null &&
-            System.getenv("RELEASE_KEY_PASSPHRASE") != null &&
-            System.getenv("RELEASE_KEYSTORE_PASSPHRASE") != null) {
-
-            create("release") {
-                storeFile = file(System.getenv("RELEASE_KEYSTORE"))
-                storePassword = System.getenv("RELEASE_KEYSTORE_PASSPHRASE")
-                keyAlias = System.getenv("RELEASE_KEY_ALIAS")
-                keyPassword = System.getenv("RELEASE_KEY_PASSPHRASE")
-            }
-
-            // Modify the existing debug config instead of creating a new one
-            getByName("debug") {
-                storeFile = file(System.getenv("RELEASE_KEYSTORE"))
-                storePassword = System.getenv("RELEASE_KEYSTORE_PASSPHRASE")
-                keyAlias = System.getenv("RELEASE_KEY_ALIAS")
-                keyPassword = System.getenv("RELEASE_KEY_PASSPHRASE")
-            }
+        create("release") {
+            val keystore = System.getenv("RELEASE_KEYSTORE")
+            storeFile = if (keystore != null) { File(keystore) } else { null }
+            storePassword = System.getenv("RELEASE_KEYSTORE_PASSPHRASE")
+            keyAlias = System.getenv("RELEASE_KEY_ALIAS")
+            keyPassword = System.getenv("RELEASE_KEY_PASSPHRASE")
         }
     }
     buildTypes {
@@ -215,16 +201,9 @@ android {
             isShrinkResources = true
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
 
-            // Only use release signing config if it exists
-            if (signingConfigs.names.contains("release")) {
+            // Only use signing config if storeFile exists
+            if (signingConfigs.getByName("release").storeFile?.exists() == true) {
                 signingConfig = signingConfigs.getByName("release")
-            }
-        }
-
-        getByName("debug") {
-            // Apply signing to debug builds as well
-            if (signingConfigs.names.contains("debug")) {
-                signingConfig = signingConfigs.getByName("debug")
             }
         }
     }
@@ -416,6 +395,8 @@ android.applicationVariants.all {
         }
         from(variant.outputs.map { it.outputFile }) {
             into("system/priv-app/${rootProject.name}")
+            // Ensure consistent APK naming in zip file
+            rename { "${rootProject.name}.apk" }
         }
 
         val moduleDir = File(projectDir, "module")
